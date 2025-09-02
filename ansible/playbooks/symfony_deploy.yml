@@ -1,0 +1,171 @@
+---
+- name: Déploiement de l'application Symfony
+  hosts: all
+  become: yes
+  vars:
+    app_root: /mnt/c/Users/Houssam/Desktop/ProjetSymfony/CRUD
+    php_version: "8.2"
+    symfony_version: "6.4"
+    mysql_root_password: "root"
+    mysql_database: "symfony"
+    mysql_user: "symfony"
+    mysql_password: "symfony"
+
+  tasks:
+    - name: Vérification de l'état du système
+      shell: |
+        ps aux | grep -E 'apt|dpkg' | grep -v grep || true
+      register: running_processes
+      changed_when: false
+
+    - name: Attente si des processus sont en cours
+      pause:
+        seconds: 30
+      when: running_processes.stdout != ""
+
+    - name: Installation des dépendances de base
+      apt:
+        name:
+          - software-properties-common
+          - curl
+          - lsb-release
+          - ca-certificates
+          - apt-transport-https
+        state: present
+        update_cache: yes
+      register: apt_result
+      retries: 3
+      delay: 10
+      until: apt_result is success
+
+    - name: Ajout du dépôt PHP
+      shell: LC_ALL=C.UTF-8 add-apt-repository -y ppa:ondrej/php
+      args:
+        creates: /etc/apt/sources.list.d/ondrej-ubuntu-php-noble.list
+      register: repo_result
+      retries: 3
+      delay: 10
+      until: repo_result is success
+
+    - name: Mise à jour des paquets
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      register: update_result
+      retries: 3
+      delay: 10
+      until: update_result is success
+
+    - name: Installation de PHP
+      apt:
+        name:
+          - php{{ php_version }}
+          - php{{ php_version }}-fpm
+          - php{{ php_version }}-mysql
+          - php{{ php_version }}-xml
+          - php{{ php_version }}-curl
+          - php{{ php_version }}-mbstring
+          - php{{ php_version }}-zip
+          - php{{ php_version }}-gd
+        state: present
+      register: php_result
+      retries: 3
+      delay: 10
+      until: php_result is success
+
+    - name: Installation de Nginx
+      apt:
+        name: nginx
+        state: present
+      register: nginx_result
+      retries: 3
+      delay: 10
+      until: nginx_result is success
+
+    - name: Installation de MySQL
+      apt:
+        name: mysql-server
+        state: present
+      register: mysql_result
+      retries: 3
+      delay: 10
+      until: mysql_result is success
+
+    - name: Démarrage de MySQL
+      service:
+        name: mysql
+        state: started
+        enabled: yes
+
+    - name: Configuration de MySQL
+      shell: |
+        mysql -e "CREATE DATABASE IF NOT EXISTS {{ mysql_database }};"
+        mysql -e "CREATE USER IF NOT EXISTS '{{ mysql_user }}'@'localhost' IDENTIFIED BY '{{ mysql_password }}';"
+        mysql -e "GRANT ALL PRIVILEGES ON {{ mysql_database }}.* TO '{{ mysql_user }}'@'localhost';"
+        mysql -e "FLUSH PRIVILEGES;"
+      register: mysql_config
+      retries: 3
+      delay: 10
+      until: mysql_config is success
+
+    - name: Installation de Composer
+      apt:
+        name: composer
+        state: present
+      register: composer_result
+      retries: 3
+      delay: 10
+      until: composer_result is success
+
+    - name: Vérification des permissions du répertoire
+      file:
+        path: "{{ app_root }}"
+        state: directory
+        mode: '0755'
+
+    - name: Installation des dépendances Composer
+      command: composer install
+      args:
+        chdir: "{{ app_root }}"
+        creates: "{{ app_root }}/vendor"
+
+    - name: Configuration des permissions
+      file:
+        path: "{{ app_root }}/var"
+        state: directory
+        mode: '0777'
+        recurse: yes
+
+    - name: Copie du fichier .env
+      copy:
+        src: "{{ app_root }}/.env"
+        dest: "{{ app_root }}/.env"
+        mode: '0644'
+      when: ansible_check_mode is false
+
+    - name: Mise à jour de la configuration de la base de données
+      replace:
+        path: "{{ app_root }}/.env"
+        regexp: 'DATABASE_URL="mysql://.*"'
+        replace: 'DATABASE_URL="mysql://{{ mysql_user }}:{{ mysql_password }}@localhost:3306/{{ mysql_database }}?serverVersion=8.0.32&charset=utf8mb4"'
+
+    - name: Création de la migration initiale
+      command: php bin/console make:migration
+      args:
+        chdir: "{{ app_root }}"
+      register: migration_create
+      changed_when: migration_create.rc == 0
+      failed_when: false
+
+    - name: Suppression de la table client
+      shell: |
+        mysql -u{{ mysql_user }} -p{{ mysql_password }} {{ mysql_database }} -e "DROP TABLE IF EXISTS client;"
+      register: drop_table
+      changed_when: drop_table.rc == 0
+      failed_when: false
+
+    - name: Exécution des migrations
+      command: php bin/console doctrine:migrations:migrate --no-interaction
+      args:
+        chdir: "{{ app_root }}"
+      when: migration_create.rc == 0 

@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  php:
+    image: ${DOCKER_USERNAME}/symfony-crud:latest
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      APP_ENV: prod
+      APP_SECRET: ${APP_SECRET}
+    depends_on:
+      - database
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf
+    depends_on:
+      - php
+
+  database:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - db_data:/var/lib/mysql
+
+volumes:
+  db_data: 
